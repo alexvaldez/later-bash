@@ -1,0 +1,249 @@
+#! /usr/bin/env bash
+set -o errexit -o noclobber -o nounset -o pipefail -o noglob
+
+declare -A ITEMS
+declare -A INCLUDE
+declare -A ACTIONS
+FILENAME=$(basename $(pwd))
+INCLUDE=([todo]=0 [doing]=0 [done]=0)
+INCLUDEALL=1
+ACTIONS=([0]=todo)
+INTERACTIVE=0
+VERBOSE=0
+ITEMCOUNT=0
+UPDATE=0
+NEWTEXT=
+
+function display_help {
+cat <<END.
+You need some help.
+END.
+}
+
+function parse_file {
+  while IFS= read -r LINE
+  do
+    if [[ $(expr match "$LINE" '\- \[.\] ') -ne 0 ]]
+    then
+      let ITEMCOUNT=$ITEMCOUNT+1
+      if [[ ${LINE:3:1} == " " ]]
+      then
+        if [[ ${LINE: -4} == "[^*]" ]]
+        then
+          ITEMS+=([$ITEMCOUNT.status]="doing" [$ITEMCOUNT.text]="${LINE:6:-4}")
+        else
+          ITEMS+=([$ITEMCOUNT.status]="todo" [$ITEMCOUNT.text]="${LINE:6}")
+        fi
+      else
+        ITEMS+=([$ITEMCOUNT.status]="done" [$ITEMCOUNT.text]="${LINE:6}")
+      fi
+    fi
+  done < "$1"
+}
+
+function add_item_no {
+  if [[ $1 = "delete" && -z $2 ]]
+  then
+    echo Delete option requires an argument >&2
+    exit 1
+  fi
+  if [[ -z $2 || $2 =~ ^[0-9]+$ ]]
+  then
+    ACTIONS["${2:-0}"]="$1"
+  else
+    echo Invalid item no $2 >&2
+    exit 1
+  fi
+  if [[ -z $2 ]]
+  then
+    INCLUDEALL=0
+    INCLUDE[$1]=1
+  else
+    UPDATE=1
+  fi
+}
+
+function find_project_dir {
+  DIRNAME=$(pwd)
+  while true
+  do
+    if [[ -d ${DIRNAME}/.git ]]
+    then
+      FILENAME=$(basename ${DIRNAME})
+      echo $FILENAME
+      break
+    fi
+    PARENT=$(dirname ${DIRNAME})
+    if [[ $PARENT == $DIRNAME ]]
+    then
+      echo Cannot locate git project
+      exit 1
+    fi
+    DIRNAME=$PARENT
+  done
+}
+
+function display_one_item {
+  printf "%2s  %-5s  %s\n" "$1" "$2" "$3"
+}
+
+function display_items {
+  for (( i=1 ; i<=$ITEMCOUNT ; i++ ))
+  do
+    STATUS="${ITEMS[$i.status]}"
+    TEXT="${ITEMS[$i.text]}"
+    if [[ INCLUDEALL -eq 1 || INCLUDE[$STATUS] -eq 1 ]]
+    then
+      display_one_item "$i" "$STATUS" "$TEXT"
+    fi
+  done
+}
+
+function write_new_file {
+  local DOING=0
+  echo '# TODO'
+  echo "$(date)"
+  echo 'Created using _later_ (bash version)'
+  echo
+	if [[ ! -z ${NEWTEXT// } ]]
+	then
+		let ITEMCOUNT=$ITEMCOUNT+1
+		ITEMS[$ITEMCOUNT.status]="${ACTIONS[0]}"
+		ITEMS[$ITEMCOUNT.text]="$NEWTEXT"
+	fi
+  for (( i=1 ; i<=$ITEMCOUNT ; i++ ))
+  do
+    STATUS="${ACTIONS[$i]:=${ITEMS[$i.status]}}"
+    TEXT="${ITEMS[$i.text]}"
+    [[ VERBOSE -ne 0 ]] && display_one_item "$i" "$STATUS" "$TEXT" >&2
+    case "$STATUS" in
+    todo)
+      echo "- [ ] $TEXT"
+      ;;
+    doing)
+      echo "- [ ] $TEXT[^*]"
+      DOING=1
+      ;;
+    done)
+      echo "- [x] $TEXT"
+      ;;
+    esac
+  done
+  if [[ "$DOING" -eq 1 ]]
+  then
+      echo
+      echo '[^*]: in progress'
+  fi
+}
+  
+function parse_options {
+  OPTIONS=$(getopt \
+            --options "hvif:updsywnY:W:N:X:" \
+            --long "help,verbose,interactive,file:,user,project,dir,done::,doing::,todo::,delete::" \
+            -- "$@")
+
+  eval set -- "$OPTIONS"
+
+  while true
+  do
+    case "$1" in
+      -h|--help)
+          display_help
+          shift
+          ;;
+      -v|--verbose)
+          VERBOSE=1
+          shift
+          ;;
+      -i|--interactive)
+          INTERACTIVE=1
+          shift
+          ;;
+      -f|--file)
+          FILENAME=$2
+          shift ; shift
+          ;;
+      -u|--user)
+          FILENAME=${USER:-${LOGNAME:-$(whoami)}}
+          shift
+          ;;
+      -p|--project)
+          find_project_dir
+          shift
+          ;;
+      -d|--dir)
+          FILENAME=$(basename $(pwd))
+          shift
+          ;;
+      -y)
+          add_item_no "done" ''
+          shift
+          ;;
+      -w)
+          add_item_no "doing" ''
+          shift
+          ;;
+      -n)
+          add_item_no "todo" ''
+          shift
+          ;;
+      -Y|--done)
+          add_item_no "done" "$2"
+          shift ; shift
+          ;;
+      -W|--doing)
+          add_item_no "doing" "$2"
+          shift ; shift
+          ;;
+      -N|--todo)
+          add_item_no "todo" "$2"
+          shift ; shift
+          ;;
+      -X|--delete)
+          add_item_no "delete" "$2"
+          shift ; shift
+          ;;
+      --)
+          shift
+          NEWTEXT="$*"
+          if [[ ! -z ${NEWTEXT// } ]]
+          then
+            UPDATE=1
+          fi
+          break
+          ;;
+    esac
+  done
+}
+
+parse_options $*
+
+if [ ! -d "$HOME/.later" ]
+then
+    mkdir "$HOME/.later"
+fi
+
+INPUTFILE="$HOME/.later/${FILENAME}.md"
+[[ VERBOSE -eq 1 ]] && echo Input file = $INPUTFILE
+[[ -f "$INPUTFILE" ]] && parse_file "$INPUTFILE"
+
+if [[ "$UPDATE" -eq 1 ]]
+then
+  TEMPFILE="$HOME/.later/.${FILENAME}.md"
+  [[ -f "$TEMPFILE" ]] && rm -f "$TEMPFILE"
+  write_new_file > "$TEMPFILE"
+  if [[ "$INTERACTIVE" -eq 1 ]]
+  then
+    echo -n "Are you sure? " >&2
+    read -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]
+    then
+        exit 0
+    fi
+  fi
+  mv -f "$TEMPFILE" "$INPUTFILE"
+else
+  display_items
+fi
+
