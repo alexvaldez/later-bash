@@ -9,10 +9,15 @@ INCLUDE=([todo]=0 [doing]=0 [done]=0)
 INCLUDEALL=1
 ACTIONS=([0]=todo)
 INTERACTIVE=0
+MARKDOWN=1
 VERBOSE=0
 ITEMCOUNT=0
 UPDATE=0
 NEWTEXT=
+declare -i BOLDFACE
+declare -i ITALICS
+declare -i DIM
+declare -i COLOR
 
 function display_help {
 cat <<END.
@@ -83,8 +88,83 @@ function find_project_dir {
   done
 }
 
+function set_attribs {
+  tput sgr0
+  if [[ COLOR -ne 0 ]] ; then tput setaf $COLOR ; fi
+  if [[ BOLDFACE -eq 1 ]] ; then tput bold ; fi
+  if [[ ITALICS -eq 1 ]] ; then tput sitm ; fi
+  if [[ DIM -eq 1 ]] ; then tput dim ; fi
+}
+
+function toggle_boldface {
+  if [[ BOLDFACE -eq 0 ]]
+  then
+    BOLDFACE=1
+  else
+    BOLDFACE=0
+  fi
+}
+
+function toggle_italics {
+  if [[ ITALICS -eq 0 ]]
+  then
+    ITALICS=1
+  else
+    ITALICS=0
+  fi
+}
+
 function display_one_item {
-  printf "%2s  %-5s  %s\n" "$1" "$2" "$3"
+  if [[ MARKDOWN -eq 0 ]]
+  then
+    printf "%2s  %-6s %s\n" "$1" "$2" "$3"
+  else
+    BOLDFACE=0
+    ITALICS=0
+    DIM=0
+    COLOR=
+    LINE=$(printf "%2s  %-6s %s\n" "$1" "$2" "$3")
+    case "$STATUS" in
+    'todo')
+      COLOR=2
+      ;;
+    'doing')
+      COLOR=
+      ;;
+    'done')
+      DIM=1
+      ;;
+    'delete')
+      COLOR=1
+      ;;
+    esac
+    while [[ $LINE =~  ^(\\.|[^*\\]+|[\*]{1,3}|[_]{1,3})(.*)$ ]]
+    do
+      case "${BASH_REMATCH[1]}" in
+      \*\*\*|___)
+        toggle_boldface
+        toggle_italics
+        ;;
+      \*\*|__)
+        toggle_boldface
+        ;;
+      \*|_)
+        toggle_italics
+        ;;
+      \\\*)
+        set_attribs
+        echo -n '*'
+        ;;
+      *)
+        set_attribs
+        echo -n "${BASH_REMATCH[1]}"
+        ;;
+      esac
+      LINE="${BASH_REMATCH[2]}"
+    done
+    tput sgr0
+    echo
+  fi
 }
 
 function display_items {
@@ -117,14 +197,14 @@ function write_new_file {
     TEXT="${ITEMS[$i.text]}"
     [[ VERBOSE -ne 0 ]] && display_one_item "$i" "$STATUS" "$TEXT" >&2
     case "$STATUS" in
-    todo)
+    'todo')
       echo "- [ ] $TEXT"
       ;;
-    doing)
+    'doing')
       echo "- [ ] $TEXT[^*]"
       DOING=1
       ;;
-    done)
+    'done')
       echo "- [x] $TEXT"
       ;;
     esac
@@ -138,8 +218,8 @@ function write_new_file {
   
 function parse_options {
   OPTIONS=$(getopt \
-            --options "hvif:updsywnY:W:N:X:" \
-            --long "help,verbose,interactive,file:,user,project,dir,done::,doing::,todo::,delete::" \
+            --options "hvif:updsywntmY:W:N:X:" \
+            --long "help,verbose,interactive,file:,user,project,dir,text,markdown,done::,doing::,todo::,delete::" \
             -- "$@")
 
   eval set -- "$OPTIONS"
@@ -173,6 +253,14 @@ function parse_options {
           ;;
       -d|--dir)
           FILENAME=$(basename $(pwd))
+          shift
+          ;;
+      -t|--text)
+          MARKDOWN=0
+          shift
+          ;;
+      -m|--markdown)
+          MARKDOWN=1
           shift
           ;;
       -y)
@@ -218,10 +306,7 @@ function parse_options {
 
 parse_options $*
 
-if [ ! -d "$HOME/.later" ]
-then
-    mkdir "$HOME/.later"
-fi
+[[ ! -d "$HOME/.later" ]] && mkdir "$HOME/.later"
 
 INPUTFILE="$HOME/.later/${FILENAME}.md"
 [[ VERBOSE -eq 1 ]] && echo Input file = $INPUTFILE
@@ -230,7 +315,7 @@ INPUTFILE="$HOME/.later/${FILENAME}.md"
 if [[ "$UPDATE" -eq 1 ]]
 then
   TEMPFILE="$HOME/.later/.${FILENAME}.md"
-  [[ -f "$TEMPFILE" ]] && rm -f "$TEMPFILE"
+  if [[ -f "$TEMPFILE" ]] ; then rm -f "$TEMPFILE" ; fi
   write_new_file > "$TEMPFILE"
   if [[ "$INTERACTIVE" -eq 1 ]]
   then
